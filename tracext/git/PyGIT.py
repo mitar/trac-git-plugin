@@ -17,6 +17,7 @@ from operator import itemgetter
 from contextlib import contextmanager
 import cStringIO
 import codecs
+from trac.util import TracError
 
 __all__ = ["git_version", "GitError", "GitErrorSha", "Storage", "StorageFactory"]
 
@@ -270,6 +271,7 @@ class Storage(object):
     def __del__(self):
         if self.__cat_file_pipe is not None:
             self.__cat_file_pipe.stdin.close()
+            self.__cat_file_pipe.terminate()
             self.__cat_file_pipe.wait()
 
     #
@@ -495,15 +497,29 @@ class Storage(object):
         if self.__cat_file_pipe is None:
             self.__cat_file_pipe = self.repo.cat_file_batch()
 
-        self.__cat_file_pipe.stdin.write(sha + '\n')
-        self.__cat_file_pipe.stdin.flush()
-        _sha, _type, _size = self.__cat_file_pipe.stdout.readline().split()
+        try:
+            self.__cat_file_pipe.stdin.write(sha + '\n')
+            self.__cat_file_pipe.stdin.flush()
 
-        if _type != kind:
-            raise TracError("internal error (got unexpected object kind '%s')" % k)
+            split_stdout_line = self.__cat_file_pipe.stdout.readline().split()
+            if len(split_stdout_line) != 3:
+                raise TracError("internal error (could not split line properly %s)" % (split_stdout_line,))
 
-        size = int(_size)
-        return self.__cat_file_pipe.stdout.read(size + 1)[:size]
+            _sha, _type, _size = split_stdout_line
+
+            if _type != kind:
+                raise TracError("internal error (got unexpected object kind '%s', expected '%s')" % (_type, kind))
+
+            size = int(_size)
+            return self.__cat_file_pipe.stdout.read(size + 1)[:size]
+        except:
+            # There was an error, we should close the pipe to get to a consistent state
+            # (Otherwise it happens that next time we call cat_file we get payload from previous call)
+            self.logger.debug("closing cat_file pipe")
+            self.__cat_file_pipe.stdin.close()
+            self.__cat_file_pipe.terminate()
+            self.__cat_file_pipe.wait()
+            self.__cat_file_pipe = None
 
     def verifyrev(self, rev):
         "verify/lookup given revision object and return a sha id or None if lookup failed"
