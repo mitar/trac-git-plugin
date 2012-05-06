@@ -267,12 +267,14 @@ class Storage(object):
         self.__commit_msg_lock = Lock()
 
         self.__cat_file_pipe = None
+        self.__cat_file_pipe_lock = Lock()
 
     def __del__(self):
-        if self.__cat_file_pipe is not None:
-            self.__cat_file_pipe.stdin.close()
-            self.__cat_file_pipe.terminate()
-            self.__cat_file_pipe.wait()
+        with self.__cat_file_pipe_lock:
+            if self.__cat_file_pipe is not None:
+                self.__cat_file_pipe.stdin.close()
+                self.__cat_file_pipe.terminate()
+                self.__cat_file_pipe.wait()
 
     #
     # cache handling
@@ -494,32 +496,34 @@ class Storage(object):
         return self.verifyrev("HEAD")
 
     def cat_file(self, kind, sha):
-        if self.__cat_file_pipe is None:
-            self.__cat_file_pipe = self.repo.cat_file_batch()
+        with self.__cat_file_pipe_lock:
+            if self.__cat_file_pipe is None:
+                self.__cat_file_pipe = self.repo.cat_file_batch()
 
-        try:
-            self.__cat_file_pipe.stdin.write(sha + '\n')
-            self.__cat_file_pipe.stdin.flush()
+            try:
+                self.__cat_file_pipe.stdin.write(sha + '\n')
+                self.__cat_file_pipe.stdin.flush()
 
-            split_stdout_line = self.__cat_file_pipe.stdout.readline().split()
-            if len(split_stdout_line) != 3:
-                raise TracError("internal error (could not split line properly %s)" % (split_stdout_line,))
+                split_stdout_line = self.__cat_file_pipe.stdout.readline().split()
+                if len(split_stdout_line) != 3:
+                    raise TracError("internal error (could not split line properly %s)" % (split_stdout_line,))
 
-            _sha, _type, _size = split_stdout_line
+                _sha, _type, _size = split_stdout_line
 
-            if _type != kind:
-                raise TracError("internal error (got unexpected object kind '%s', expected '%s')" % (_type, kind))
+                if _type != kind:
+                    raise TracError("internal error (got unexpected object kind '%s', expected '%s')" % (_type, kind))
 
-            size = int(_size)
-            return self.__cat_file_pipe.stdout.read(size + 1)[:size]
-        except:
-            # There was an error, we should close the pipe to get to a consistent state
-            # (Otherwise it happens that next time we call cat_file we get payload from previous call)
-            self.logger.debug("closing cat_file pipe")
-            self.__cat_file_pipe.stdin.close()
-            self.__cat_file_pipe.terminate()
-            self.__cat_file_pipe.wait()
-            self.__cat_file_pipe = None
+                size = int(_size)
+                return self.__cat_file_pipe.stdout.read(size + 1)[:size]
+            except:
+                # There was an error, we should close the pipe to get to a consistent state
+                # (Otherwise it happens that next time we call cat_file we get payload from previous call)
+                self.logger.debug("closing cat_file pipe")
+                self.__cat_file_pipe.stdin.close()
+                self.__cat_file_pipe.terminate()
+                self.__cat_file_pipe.wait()
+                self.__cat_file_pipe = None
+                raise
 
     def verifyrev(self, rev):
         "verify/lookup given revision object and return a sha id or None if lookup failed"
